@@ -5,10 +5,6 @@ import numpy as np
 def nvar_rows(d, k):
     return int(1 + k*d + k*d*(k*d + 1)/2)
 
-def RMSE(prediction, target):
-    n = len(prediction)
-    return np.linalg.norm(prediction - target)/np.sqrt(n)
-
 def make_NVAR_state_vector(data, k, s, idx):
     d = data.shape[1]
     lin = np.reshape(np.array(data[idx:idx-k*s:-s]), (k*d,1))
