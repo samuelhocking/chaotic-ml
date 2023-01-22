@@ -14,3 +14,8 @@ def save_numpy_to_json(nparray, filename):
 
 def read_json_to_numpy(filename):
     return pd.read_json(f'{filename}.json').to_numpy()
+
+
+def RMSE(prediction, target):
+    n = len(prediction)
+    return np.linalg.norm(prediction - target)/np.sqrt(n)
