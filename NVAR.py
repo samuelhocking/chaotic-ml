@@ -1,6 +1,7 @@
 # NVAR Classes & Methods
 
 import numpy as np
+from utils import *
 
 def nvar_rows(d, k):
     return int(1 + k*d + k*d*(k*d + 1)/2)
@@ -33,7 +34,8 @@ class NVARModel():
     def train(self, data, target, train_indices):
         self.training_target = target[train_indices]
         self.state = make_NVAR_state_matrix(data=data, k=self.k, s=self.s, indices=train_indices)
-        self.w = np.linalg.lstsq(self.state.dot(self.state.T) + self.reg * np.eye(self.state.shape[0]), self.state.dot(self.training_target), rcond=None)[0]
+        # self.w = np.linalg.lstsq(self.state.dot(self.state.T) + self.reg * np.eye(self.state.shape[0]), self.state.dot(self.training_target), rcond=None)[0]
+        self.w = np.linalg.lstsq(self.state @ self.state.T + self.reg * np.eye(self.state.shape[0]), self.state @ self.training_target, rcond=None)[0]
 
     def evaluate(self, data, target, test_indices):
         self.test_target = target[test_indices]

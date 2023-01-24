@@ -23,10 +23,12 @@ class ESNModel():
         return self.inputConnGen(self.internalUnits, self.inputUnits)
         
     def makeInternalMatrix(self):
-        A = self.internalConnGen(self.internalUnits, self.internalUnits)
-        vals, vects = np.linalg.eig(A)
-        maxeig = max(abs(vals))
-        return self.spectralRadius/maxeig*A
+        maxeig = 0
+        while maxeig == 0:
+            self.A = self.internalConnGen(self.internalUnits, self.internalUnits)
+            vals, vects = np.linalg.eig(self.A)
+            maxeig = max(abs(vals))
+        return self.spectralRadius/maxeig*self.A
 
     def train(self, data, target, train_indices):
         # should scan during pre-training and record pre-train inputs states into pre-train history
@@ -49,7 +51,7 @@ class ESNModel():
                 self.trainingStates[i-train_indices[0]] = state
         self.trainingConcat = np.column_stack([self.trainingInputs, self.trainingStates])
         self.W_out = np.linalg.lstsq(self.trainingConcat.T @ self.trainingConcat + self.regularization * np.eye(self.trainingConcat.shape[1]), self.trainingConcat.T @ self.trainingTarget, rcond=None)[0].T
-    
+
     def recursive_predict(self, seedData, t_forward):
         recursive_out = np.zeros((t_forward, self.outputUnits))
         prePredictionStates = np.zeros((len(seedData)-1,self.internalUnits))
