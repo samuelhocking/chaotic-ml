@@ -1,4 +1,4 @@
-# Chaotic Machine Learning
+# Machine Learning for Chaotic Dynamical Systems
 
 ## Overview
 
