@@ -9,6 +9,7 @@ While the repo's contents are very much in flux, a basic roadmap is below:
 - `cmlCore.py`: consolidated core ML models
 - `cmlUtils.py`: consolidated ancillary tools
 - `Lorenz-NVAR.ipynb`: notebook examining various aspects of predicting the Lorenz attractor with NVAR models
+- `chaotic_datasets.ipynb`: notebook to assist generation of Mackey-Glass and Lorenz time-series
 
 Miscellaneous others:
 - `Gated-RNN-Prediction.ipynb`: examination of the Mackey-Glass and Lorenz systems gated recurrent neural networks, specifically Long Short-term Memory (LSTM)
