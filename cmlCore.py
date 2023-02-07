@@ -6,12 +6,106 @@ Consolidated core model classes, methods, etc. for machine learning on chaotic s
 import numpy as np
 import sympy as sp
 import pandas as pd
-from cmlUtils import RMSE
+from cmlUtils import * 
 from IPython.display import clear_output, display
 
-def get_symbolic_state_labels(k, d, nonlinearFunc=None, extraNonlinearFunc=None):
+# -----------------------------------------------------
+# ........................ NVAR .......................
+# -----------------------------------------------------
+
+def quadraticCombination(x):
+    return np.vstack([x[i]*x[i:,:] for i in range(len(x))])
+
+def pureLinearFunc(data, k, s, idx):
+    d = data.shape[1]
+    return np.reshape(np.array(data[idx:idx-k*s:-s]), (k*d,1))
+
+def hybridLinearFunc(data, k, s, idx, stepper):
+    d = data.shape[1]
+    y0 = data[idx]
+    hybridstep = stepper.step(y0)
+    purelin = np.reshape(np.array(data[idx:idx-k*s:-s]), (k*d,1))
+    return np.vstack([np.array([stepper.step(y0)]).T,purelin])
+
+class NVARModel():
+    def __init__(self, k, s, reg, nonlinearFunc=None, extraNonlinearFunc=None, hybridCallable=None):
+        self.k = k
+        self.s = s
+        self.reg = reg
+        self.nonlinearFunc = nonlinearFunc
+        self.extraNonlinearFunc = extraNonlinearFunc
+        self.hybridCallable = hybridCallable
+
+    def make_NVAR_state_vector(self, data, idx):
+        d = data.shape[1]
+        pure = np.reshape(np.array(data[idx:idx-self.k*self.s:-self.s]), (self.k*d,1))
+        if self.hybridCallable == None:
+            lin = pure
+        else:
+            y0 = data[idx]
+            hybridstep = self.hybridCallable.step(y0)
+            lin = np.vstack([np.array([hybridstep]).T,pure])
+        if self.nonlinearFunc != None and self.extraNonlinearFunc != None:
+            nonlin = self.nonlinearFunc(lin)
+            extranonlin = self.extraNonlinearFunc(np.vstack([lin, nonlin]))
+            return np.vstack(
+                [
+                    1,
+                    lin,
+                    nonlin,
+                    extranonlin
+                ]
+            )
+        elif self.nonlinearFunc != None:
+            nonlin = self.nonlinearFunc(lin)
+            return np.vstack(
+                [
+                    1,
+                    lin,
+                    nonlin
+                ]
+            )
+        else:
+            return np.vstack(
+                [
+                    1,
+                    lin
+                ]
+            )
+
+    def make_NVAR_state_matrix(self, data, indices):
+        return np.column_stack(
+            [self.make_NVAR_state_vector(data, idx) for idx in indices]
+        )
+
+    def train(self, data, target, train_indices):
+        self.training_target = target[train_indices]
+        self.state = self.make_NVAR_state_matrix(data=data, indices=train_indices)
+        self.w = np.linalg.lstsq(self.state @ self.state.T + self.reg * np.eye(self.state.shape[0]), self.state @ self.training_target, rcond=None)[0]
+
+    def evaluate(self, data, target, test_indices):
+        self.test_target = target[test_indices]
+        self.test_state = self.make_NVAR_state_matrix(data=data, indices=test_indices)
+        self.test_out = self.test_state.T @ self.w
+        self.test_RMSE = RMSE(self.test_out, self.test_target)
+    
+    def recursive_predict(self, data, start, end, t_forward):
+        running_data = data[start:end,]
+        recursive_out = []
+        for i in range(t_forward):
+            state_vect = self.make_NVAR_state_vector(data=running_data, idx=-1)
+            y = state_vect.T @ self.w
+            recursive_out.append(y[0])
+            running_data = np.vstack((running_data, y))
+        recursive_out = np.array(recursive_out)
+        return recursive_out
+
+def get_symbolic_state_labels(k, d, nonlinearFunc=None, extraNonlinearFunc=None, hybrid=False):
     bias = np.array([sp.symbols("1")])
     lin_entries = []
+    if hybrid:
+        for j in range(d):
+            lin_entries.append(sp.symbols(f'H[x(t)_{j+1}]'))
     for i in range(k):
         for j in range(d):
             if i == 0:
@@ -99,88 +193,9 @@ def get_norm_df(symb_state_arr, model):
 def nvar_rows(d, k):
     return int(1 + k*d + k*d*(k*d + 1)/2)
 
-def quadraticCombination(x):
-    return np.vstack([x[i]*x[i:,:] for i in range(len(x))])
-
-def pureLinearFunc(data, k, s, idx):
-    d = data.shape[1]
-    return np.reshape(np.array(data[idx:idx-k*s:-s]), (k*d,1))
-
-# def hybridLinearFunc()
-#     pass
-
-# class HybridIntegrator():
-#     def __init__(self, )
-
-def make_NVAR_state_vector(data, k, s, idx, linearFunc=pureLinearFunc, nonlinearFunc=None, extraNonlinearFunc=None):
-    # nonlinearFunc should:
-    #   accept a single argument of the linear portion of the state vector
-    #   and return a numpy array
-    lin = linearFunc(data, k, s, idx)
-    if nonlinearFunc != None and extraNonlinearFunc != None:
-        nonlin = nonlinearFunc(lin)
-        extranonlin = extraNonlinearFunc(np.vstack([lin, nonlin]))
-        return np.vstack(
-            [
-                1,
-                lin,
-                nonlin,
-                extranonlin
-            ]
-        )
-    elif nonlinearFunc != None:
-        nonlin = nonlinearFunc(lin)
-        return np.vstack(
-            [
-                1,
-                lin,
-                nonlin
-            ]
-        )
-    else:
-        return np.vstack(
-            [
-                1,
-                lin
-            ]
-        )
-
-def make_NVAR_state_matrix(data, k, s, indices, linearFunc=pureLinearFunc, nonlinearFunc=None, extraNonlinearFunc=None):
-    return np.column_stack(
-        [make_NVAR_state_vector(data, k, s, idx, linearFunc, nonlinearFunc, extraNonlinearFunc) for idx in indices]
-    )
-
-class NVARModel():
-    def __init__(self, k, s, reg, linearFunc=pureLinearFunc, nonlinearFunc=None, extraNonlinearFunc=None):
-        self.k = k
-        self.s = s
-        self.reg = reg
-        self.linearFunc = linearFunc
-        self.nonlinearFunc = nonlinearFunc
-        self.extraNonlinearFunc = extraNonlinearFunc
-
-    def train(self, data, target, train_indices):
-        self.training_target = target[train_indices]
-        self.state = make_NVAR_state_matrix(data=data, k=self.k, s=self.s, indices=train_indices, linearFunc=self.linearFunc, nonlinearFunc=self.nonlinearFunc, extraNonlinearFunc=self.extraNonlinearFunc)
-        # self.w = np.linalg.lstsq(self.state.dot(self.state.T) + self.reg * np.eye(self.state.shape[0]), self.state.dot(self.training_target), rcond=None)[0]
-        self.w = np.linalg.lstsq(self.state @ self.state.T + self.reg * np.eye(self.state.shape[0]), self.state @ self.training_target, rcond=None)[0]
-
-    def evaluate(self, data, target, test_indices):
-        self.test_target = target[test_indices]
-        self.test_state = make_NVAR_state_matrix(data=data, k=self.k, s=self.s, indices=test_indices, linearFunc=self.linearFunc, nonlinearFunc=self.nonlinearFunc, extraNonlinearFunc=self.extraNonlinearFunc)
-        self.test_out = self.test_state.T @ self.w
-        self.test_RMSE = RMSE(self.test_out, self.test_target)
-    
-    def recursive_predict(self, data, start, end, t_forward):
-        running_data = data[start:end,]
-        recursive_out = []
-        for i in range(t_forward):
-            state_vect = make_NVAR_state_vector(data=running_data, k=self.k, s=self.s, idx=-1, nonlinearFunc=self.nonlinearFunc, extraNonlinearFunc=self.extraNonlinearFunc)
-            y = state_vect.T @ self.w
-            recursive_out.append(y[0])
-            running_data = np.vstack((running_data, y))
-        recursive_out = np.array(recursive_out)
-        return recursive_out
+# -----------------------------------------------------
+# ......................... ESN .......................
+# -----------------------------------------------------
 
 class ESNModel():
     def __init__(self, inputUnits, inputConnGen, internalUnits, internalConnGen, outputUnits, leakRate, spectralRadius, regularization, activation=np.tanh):
@@ -249,29 +264,58 @@ class ESNModel():
             input = y
         return recursive_out
 
-def testRecursiveNVARParams(k, s_grid, reg_grid, data, target, train_start, train_end, test_start, test_end, linearFunc, nonlinearFunc, extranonlinearFunc):
+def testRecursiveNVARParams(
+    k,
+    s_grid,
+    reg_grid,
+    data,
+    target,
+    train_start,
+    train_end, 
+    test_start,
+    test_end,
+    metricFunc,
+    objective=np.argmin,
+    nonlinearFunc=None,
+    extranonlinearFunc=None,
+    hybridCallable=None,
+    returnFlag=False
+    ):
 
     test_target = target[test_start:test_end]
     train_indices = np.arange(train_start,train_end)
 
     model_arr = []
-    recursive_rmse_arr = []
+    metric_arr = []
     ctr = 0
     total_scens = len(s_grid)*len(reg_grid)
     for s in s_grid:
         for r in reg_grid:
             clear_output(wait=True)
             print(f'done: scen {ctr}/{total_scens-1} ({100*ctr/(total_scens-1):.02f}%) |  s={s} r={r}')
-            model = NVARModel(k, s, r, linearFunc, nonlinearFunc, extranonlinearFunc)
+            model = NVARModel(k, s, r, nonlinearFunc, extranonlinearFunc, hybridCallable)
             model.train(data, target, train_indices)
-            recursive_rmse_arr.append(RMSE(test_target,model.recursive_predict(data, train_start, train_end, test_end-test_start)))
+            recursive_out = model.recursive_predict(data, train_start, train_end, test_end-test_start)
+            metric_arr.append(metricFunc(recursive_out,test_target))
             model_arr.append(model)
             ctr += 1
-    recursive_rmse_arr = np.array(recursive_rmse_arr)
-    best_recursive_idx = np.argmin(recursive_rmse_arr[~np.isnan(recursive_rmse_arr)])
-    best_recursive_model = [model_arr[i] for i in range(len(model_arr)) if ~np.isnan(recursive_rmse_arr)[i]][best_recursive_idx]
+    metric_arr = np.array(metric_arr)
+    best_idx = objective(metric_arr[~np.isnan(metric_arr)])
+    best_model = [model_arr[i] for i in range(len(model_arr)) if ~np.isnan(metric_arr)[i]][best_idx]
+    best_metric = [metric_arr[i] for i in range(len(metric_arr)) if ~np.isnan(metric_arr)[i]][best_idx]
 
     print(f'best recursive params:')
-    print(f'k  :{best_recursive_model.k}')
-    print(f's  :{best_recursive_model.s}')
-    print(f'reg:{best_recursive_model.reg}')
+    print(f'k        :{best_model.k}')
+    print(f's        :{best_model.s}')
+    print(f'reg      :{best_model.reg}')
+    print(f'objective:{best_metric}')
+
+    if returnFlag:
+        return {
+            'k' : best_model.k,
+            's' : best_model.s,
+            'reg' : best_model.reg,
+            'size' : best_model.w.shape[0],
+            'metric' : best_metric
+        }
+

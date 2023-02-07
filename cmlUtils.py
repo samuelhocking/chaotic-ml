@@ -6,8 +6,13 @@ Consolidated utility methods and classes for machine learning on chaotic systems
 import numpy as np
 import pandas as pd
 from scipy.optimize import OptimizeResult
+from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 import os
+
+# -----------------------------------------------------
+# ..................... UTILITIES .....................
+# -----------------------------------------------------
 
 def condMakeDir(path):
     '''
@@ -23,6 +28,10 @@ def save_numpy_to_json(nparray, filename):
 def read_json_to_numpy(filename):
     return pd.read_json(f'{filename}.json').to_numpy()
 
+# -----------------------------------------------------
+# ....................... METRICS .....................
+# -----------------------------------------------------
+
 def RMSE(prediction, target):
     '''
     root mean squared error (model evaluation metric)
@@ -35,7 +44,25 @@ def NRMSE(prediction, target):
     minnorm = min(np.array([np.linalg.norm(x) for x in target]))
     return RMSE(prediction, target)/(maxnorm-minnorm)
 
-def RK4(func, y0, t_array, args=None):
+# closure!
+def validTime(threshold):
+    threshold = threshold
+    def inner_func(prediction, target):
+        valid_idx = 0
+        arr = [np.linalg.norm(prediction[i]-target[i])/np.linalg.norm(target[i]) for i in range(len(target))]
+        for i in range(len(arr)):
+            if arr[i] >= threshold:
+                valid_idx = i
+                break
+        return valid_idx
+    return inner_func
+
+# -----------------------------------------------------
+# ................... INTEGRATION .....................
+# -----------------------------------------------------
+
+def RK4(func, y0, t_array, args=None, method=None, max_step=None):
+    # method and max_step are unused dummy variables to facilitate compatibility with solve_ivp calls
     d = len(y0)
     n = len(t_array)
     y_array = np.zeros((n,d))
@@ -53,6 +80,7 @@ def RK4(func, y0, t_array, args=None):
     return OptimizeResult(t=t_array, y=y_array.T)
 
 def dlorenz(t, X, a, b, c, a_eps, b_eps, c_eps):
+    # t is an unused dummy variable to facilitate compatibility with solve_ivp calls
     x, y, z = X
     a = (1+a_eps)*a
     b = (1+b_eps)*b
@@ -62,6 +90,39 @@ def dlorenz(t, X, a, b, c, a_eps, b_eps, c_eps):
         x*(b-z)-y,
         x*y-c*z
         ])
+
+def solveIVPCompatibilityFunc(method, max_step):
+    '''
+    compatible callable with same input space as RK4, for use in CompatibleStepper class for hybrid prediction
+    '''
+    method = method
+    max_step = max_step
+    def inner_func(func, y0, t_array, args):
+        return solve_ivp(
+            func,
+            (t_array[0], t_array[-1]+(t_array[-1]-t_array[-2])),
+            y0,
+            method=method,
+            t_eval=t_array,
+            max_step=max_step,
+            args=args,
+            vectorized=True
+        )
+    return inner_func
+
+class CompatibleStepper():
+    def __init__(self, func, args, callable, dt):
+        self.func = func
+        self.args = args
+        self.callable = callable
+        self.dt = dt
+    def step(self, y0):
+        sol = self.callable(self.func, y0, np.array([0, self.dt]), self.args)
+        return sol.y[:,1]
+
+# -----------------------------------------------------
+# ..................... ANALYSIS ......................
+# -----------------------------------------------------
 
 def makeIndivWeightDF(weightMatrix, symbolicLabels):
     cols = [f'x_{i}' for i in range(weightMatrix.shape[1])]
@@ -89,7 +150,7 @@ def plotWeights(df):
     ax.set_xticklabels(df['feature'])
     ax.legend()
 
-def plotRecursiveComparison(recursiveOut, data, t0, t_forward, labels=None, figsize=(22,8)):
+def plotRecursiveComparison(recursiveOut, data, t0, t_forward, labels=None, figsize=(22,8), vline_x=None):
     if labels == None:
         labels = [f'x_{i}' for i in range(recursiveOut.shape[1])]
     fig, axs = plt.subplots(2, figsize=figsize)
@@ -98,12 +159,37 @@ def plotRecursiveComparison(recursiveOut, data, t0, t_forward, labels=None, figs
         axs[0].plot(np.arange(t0,t0+t_forward), data[t0:t0+t_forward,i], label=f'{labels[i]} target')
         axs[1].plot(np.arange(t0,t0+t_forward), np.abs(recursiveOut[:t_forward,i]-data[t0:t0+t_forward,i]), label=f'{labels[i]} error')
     axs[0].legend(loc="right", ncol=1, bbox_to_anchor=(1.1,0.5))
-    axs[1].legend(loc="right", ncol=1, bbox_to_anchor=(1.12,0.5))
+    axs[1].legend(loc="right", ncol=1, bbox_to_anchor=(1.1,0.5))
+    if vline_x:
+        axs[0].axvline(vline_x, color='r', linestyle='dashed')
+        axs[1].axvline(vline_x, color='r', linestyle='dashed')
     axs[0].set_title(f'Lorenz: recursive prediction vs. target [{t0},{t0+t_forward}]')
-    plt.subplots_adjust(hspace=0.2)
+    axs[1].set_title(f'Coordinate-wise |error|')
+    fig.tight_layout()
     plt.show()
 
-def plotTestComparison(testOut, testTarget, t0, t_forward, labels=None, figsize=(22,8)):
+def plotEnhancedRecursiveComparison(recursiveOut, data, t0, t_forward, labels=None, figsize=(22,12), vline_x=None):
+    if labels == None:
+        labels = [f'x_{i}' for i in range(recursiveOut.shape[1])]
+    fig, axs = plt.subplots(3, figsize=figsize)
+    for i in range(len(labels)):
+        axs[0].plot(np.arange(t0,t0+t_forward), recursiveOut[:t_forward,i], label=f'{labels[i]} prediction')
+        axs[0].plot(np.arange(t0,t0+t_forward), data[t0:t0+t_forward,i], label=f'{labels[i]} target')
+        axs[1].plot(np.arange(t0,t0+t_forward), np.abs(recursiveOut[:t_forward,i]-data[t0:t0+t_forward,i]), label=f'{labels[i]} error')
+    axs[2].plot(np.arange(t0,t0+t_forward), [np.linalg.norm(recursiveOut[i]-data[t0+i])/np.linalg.norm(data[t0+i]) for i in range(t_forward)], label=f'error norm/data norm')
+    axs[0].legend(loc="right", ncol=1, bbox_to_anchor=(1.1,0.5))
+    axs[1].legend(loc="right", ncol=1, bbox_to_anchor=(1.1,0.5))
+    if vline_x:
+        axs[0].axvline(vline_x, color='r', linestyle='dashed')
+        axs[1].axvline(vline_x, color='r', linestyle='dashed')
+        axs[2].axvline(vline_x, color='r', linestyle='dashed')
+    axs[0].set_title(f'Lorenz: recursive prediction vs. target [{t0},{t0+t_forward}]')
+    axs[1].set_title(f'Coordinate-wise |error|')
+    axs[2].set_title('Total ||error||/||x||')
+    fig.tight_layout()
+    plt.show()
+
+def plotTestComparison(testOut, testTarget, t0, t_forward, labels=None, figsize=(22,8), vline_x=None):
     if labels == None:
         labels = [f'x_{i}' for i in range(testOut.shape[1])]
     fig, axs = plt.subplots(2, figsize=figsize)
@@ -113,6 +199,10 @@ def plotTestComparison(testOut, testTarget, t0, t_forward, labels=None, figsize=
         axs[1].plot(np.arange(t0,t0+t_forward), np.abs(testOut[:t_forward,i]-testTarget[t0:t0+t_forward,i]), linewidth=0.75, label=f'{labels[i]} error')
     axs[0].legend(loc="right", ncol=1, bbox_to_anchor=(1.1,0.5))
     axs[1].legend(loc="right", ncol=1, bbox_to_anchor=(1.1,0.5))
+    if vline_x:
+        axs[0].axvline(vline_x, color='r', linestyle='dashed')
+        axs[1].axvline(vline_x, color='r', linestyle='dashed')
     axs[0].set_title(f'Lorenz: one-step ahead test vs. target [{t0},{t0+t_forward}]')
-    plt.subplots_adjust(hspace=0.2)
+    axs[1].set_title(f'Coordinate-wise |error|')
+    fig.tight_layout()
     plt.show()
