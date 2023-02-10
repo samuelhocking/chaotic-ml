@@ -91,6 +91,7 @@ def dlorenz(t, X, a, b, c, a_eps, b_eps, c_eps):
         x*y-c*z
         ])
 
+# closure!
 def solveIVPCompatibilityFunc(method, max_step):
     '''
     compatible callable with same input space as RK4, for use in CompatibleStepper class for hybrid prediction
