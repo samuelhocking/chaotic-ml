@@ -76,6 +76,17 @@ def NRMSE(prediction, target):
     minnorm = min(np.array([np.linalg.norm(x) for x in target]))
     return RMSE(prediction, target)/(maxnorm-minnorm)
 
+def meanNorm(target):
+    n = len(target)
+    return sum(np.array(np.linalg.norm(x) for x in target))/n
+
+def meanNormSq(target):
+    n = len(target)
+    return np.linalg.norm(target)**2/n
+
+def NMSE(prediction, target):
+    return MSE(prediction,target)/meanNormSq(target)
+
 # closure!
 def validTime(threshold):
     threshold = threshold

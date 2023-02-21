@@ -79,12 +79,6 @@ class NVARModel():
             [self.make_NVAR_state_vector(data, idx) for idx in indices]
         ).T
 
-    # def train(self, data, target, train_indices):
-    #     self.training_target = target[train_indices]
-    #     self.state = self.make_NVAR_state_matrix(data=data, indices=train_indices)
-    #     # self.w = np.linalg.lstsq(self.state @ self.state.T + self.reg * np.eye(self.state.shape[0]), self.state @ self.training_target, rcond=None)[0]
-    #     self.w = np.linalg.lstsq(self.state.T @ self.state + self.reg * np.eye(self.state.shape[1]), self.state.T @ self.training_target, rcond=None)[0]
-
     def train(self, data, target, train_indices, dataLossFactor=1, ODEFunc=None, ODELossFactor=0, D_ODEFunc=None, D_ODELossFactor=0, printResults=True):
         ODE_indices = train_indices[1:-1] # central difference
         D_ODE_indices = train_indices[1:-1] # central difference
@@ -126,11 +120,13 @@ class NVARModel():
         self.training_pred_data = self.state @ self.w
         self.training_data_loss = NormSq(self.training_pred_data, self.training_target)
         self.training_data_MSE = MSE(self.training_pred_data, self.training_target)
+        self.training_data_NMSE = NMSE(self.training_pred_data, self.training_target)
         self.training_data_NRMSE = NRMSE(self.training_pred_data, self.training_target)
         self.weighted_training_data_loss = dataLossFactor * self.training_data_loss
         data_loss_info = {
             'Component' : 'Data',
             'MSE' : self.training_data_MSE,
+            'NMSE' : self.training_data_NMSE,
             'NRMSE' : self.training_data_NRMSE,
             'Loss' : self.training_data_loss,
             'Weighted Loss' : self.weighted_training_data_loss
@@ -139,11 +135,13 @@ class NVARModel():
         # -- Regularization
         self.w_norm_sq = np.linalg.norm(self.w)**2
         self.w_MSE = np.linalg.norm(self.w)**2/(self.w.size)
+        self.w_NMSE = np.linalg.norm(self.w)**2/(self.w.size)
         self.w_NRMSE = np.linalg.norm(self.w)/np.sqrt(self.w.size)
         self.reg_penalty = self.reg*self.w_norm_sq
         reg_loss_info = {
             'Component' : 'Regularization',
             'MSE' : self.w_MSE,
+            'NMSE' : self.w_NMSE,
             'NRMSE' : self.w_NRMSE,
             'Loss' : self.w_norm_sq,
             'Weighted Loss' : self.reg_penalty
@@ -154,11 +152,13 @@ class NVARModel():
             self.training_pred_ODE = self.D1.T @ self.training_pred_data
             self.training_ODE_loss = NormSq(self.training_pred_ODE, self.ODE_training_target)
             self.training_ODE_MSE = MSE(self.training_pred_ODE, self.ODE_training_target)
+            self.training_ODE_NMSE = NMSE(self.training_pred_ODE, self.ODE_training_target)
             self.training_ODE_NRMSE = NRMSE(self.training_pred_ODE, self.ODE_training_target)
             self.weighted_training_ODE_loss = ODELossFactor * self.training_ODE_loss
             ODE_loss_info = {
             'Component' : 'ODE',
             'MSE' : self.training_ODE_MSE,
+            'NMSE' : self.training_ODE_NMSE,
             'NRMSE' : self.training_ODE_NRMSE,
             'Loss' : self.training_ODE_loss,
             'Weighted Loss' : self.weighted_training_ODE_loss
@@ -173,11 +173,13 @@ class NVARModel():
             self.training_pred_D_ODE = self.D2.T @ self.training_pred_data
             self.training_D_ODE_loss = NormSq(self.training_pred_D_ODE, self.D_ODE_training_target)
             self.training_D_ODE_MSE = MSE(self.training_pred_D_ODE, self.D_ODE_training_target)
+            self.training_D_ODE_NMSE = NMSE(self.training_pred_D_ODE, self.D_ODE_training_target)
             self.training_D_ODE_NRMSE = NRMSE(self.training_pred_D_ODE, self.D_ODE_training_target)
             self.weighted_training_D_ODE_loss = D_ODELossFactor * self.training_D_ODE_loss
             D_ODE_loss_info = {
             'Component' : "ODE'",
             'MSE' : self.training_D_ODE_MSE,
+            'NMSE' : self.training_D_ODE_NMSE,
             'NRMSE' : self.training_D_ODE_NRMSE,
             'Loss' : self.training_D_ODE_loss,
             'Weighted Loss' : self.weighted_training_D_ODE_loss
@@ -191,6 +193,7 @@ class NVARModel():
         total_loss_info = {
             'Component' : 'Total',
             'MSE' : sum([x['MSE'] for x in loss_info]),
+            'NMSE' : sum([x['NMSE'] for x in loss_info]),
             'NRMSE' : sum([x['NRMSE'] for x in loss_info]),
             'Loss' : sum([x['Loss'] for x in loss_info]),
             'Weighted Loss' : sum([x['Weighted Loss'] for x in loss_info])
@@ -204,27 +207,20 @@ class NVARModel():
                 self.training_df.to_string(
                 formatters= {
                     "MSE": "{:.6f}".format,
+                    "NMSE": "{:.6f}".format,
                     "NRMSE": "{:.6f}".format,
                     "Loss": "{:.6f}".format,
                     "Weighted Loss": "{:.6f}".format
                 }
                 )
             )
-        # if printResults:
-        #     print(f"Training results:")
-        #     for x in loss_info:
-        #         for y in x:
-        #             if isinstance(y, str):
-        #                 print(y.rjust(25), end='')
-        #             else:
-        #                 print(str('%.6f' % y).rjust(25), end='')
-        #         print()
 
     def test(self, data, target, test_indices, printResults=True):
         self.test_target = target[test_indices]
         self.test_state = self.make_NVAR_state_matrix(data=data, indices=test_indices)
         self.test_out = self.test_state @ self.w
         self.test_MSE = MSE(self.test_out, self.test_target)
+        self.test_NMSE = NMSE(self.test_out, self.test_target)
         self.test_RMSE = RMSE(self.test_out, self.test_target)
         self.test_NRMSE = NRMSE(self.test_out, self.test_target)
 
