@@ -27,10 +27,39 @@ def save_numpy_to_json(nparray, filename):
 
 def read_json_to_numpy(filename):
     return pd.read_json(f'{filename}.json').to_numpy()
+    
+def backDiffMatrix(T, dt):
+    D = np.zeros((T,T-1))
+    for i in range(T-1):
+        D[i,i] = -1/dt
+        D[i+1,i] = 1/dt
+    return D
+
+def firstCentralDiffMatrix(T, dt):
+    D = np.zeros((T,T-2))
+    for i in range(T-2):
+        D[i,i] = -1/(2*dt)
+        D[i+2,i] = 1/(2*dt)
+    return D
+
+def secondCentralDiffMatrix(T, dt):
+    D = np.zeros((T,T-2))
+    for i in range(T-2):
+        D[i,i] = 1/dt**2
+        D[i+1,i] = -2/(dt**2)
+        D[i+2,i] = 1/dt**2
+    return D
 
 # -----------------------------------------------------
 # ....................... METRICS .....................
 # -----------------------------------------------------
+
+def NormSq(prediction, target):
+    return (np.linalg.norm(prediction - target)**2)
+
+def MSE(prediction, target):
+    n = len(prediction)
+    return (np.linalg.norm(prediction - target)**2)/n
 
 def RMSE(prediction, target):
     '''
@@ -40,6 +69,9 @@ def RMSE(prediction, target):
     return np.linalg.norm(prediction - target)/np.sqrt(n)
 
 def NRMSE(prediction, target):
+    '''
+    normalized root mean squared error (model evaluation metric)
+    '''
     maxnorm = max(np.array([np.linalg.norm(x) for x in target]))
     minnorm = min(np.array([np.linalg.norm(x) for x in target]))
     return RMSE(prediction, target)/(maxnorm-minnorm)
@@ -90,6 +122,32 @@ def dlorenz(t, X, a, b, c, a_eps, b_eps, c_eps):
         x*(b-z)-y,
         x*y-c*z
         ])
+
+def simple_dlorenz(a=10, b=28, c=8/3):
+    a = a
+    b = b
+    c = c
+    def innerFunc(X):
+        x, y, z = X
+        return np.array([
+            a*(y-x),
+            x*(b-z)-y,
+            x*y-c*z
+        ])
+    return innerFunc
+
+def simple_ddlorenz(a=10, b=28, c=8/3):
+    a = a
+    b = b
+    c = c
+    def innerFunc(X):
+        x, y, z = X
+        return np.array([
+            a*(x*(b-z)-y)-a**2*(y-x),
+            a*b*(y-x)-a*z*(y-x)-x*(x*y-c*z)-(x*(b-z)-y),
+            a*y*(y-x)+x*(x*(b-z)-y)-c*(x*y-c*z)
+        ])
+    return innerFunc
 
 # closure!
 def solveIVPCompatibilityFunc(method, max_step):
