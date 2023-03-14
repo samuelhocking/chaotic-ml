@@ -9,6 +9,7 @@ from scipy.optimize import OptimizeResult
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 import os
+from math import factorial
 
 # -----------------------------------------------------
 # ..................... UTILITIES .....................
@@ -50,6 +51,20 @@ def secondCentralDiffMatrix(T, dt):
         D[i+2,i] = 1/dt**2
     return D
 
+def n_choose_k(n,k):
+    return factorial(n)/(factorial(n-k)*factorial(k))
+
+def n_multichoose_k(n,k):
+    return n_choose_k(n+k-1,k)
+
+def n_multichoose_l_levels(n,l):
+    return sum([n_multichoose_k(n,k) for k in range(1,l+1)])
+
+def basisVectRn(i,n):
+    e = np.zeros(n)
+    e[i] = 1
+    return e
+
 # -----------------------------------------------------
 # ....................... METRICS .....................
 # -----------------------------------------------------
@@ -78,7 +93,7 @@ def NRMSE(prediction, target):
 
 def meanNorm(target):
     n = len(target)
-    return sum(np.array(np.linalg.norm(x) for x in target))/n
+    return sum(np.array([np.linalg.norm(x) for x in target]))/n
 
 def meanNormSq(target):
     n = len(target)
@@ -88,10 +103,11 @@ def NMSE(prediction, target):
     return MSE(prediction,target)/meanNormSq(target)
 
 # closure!
+# needs to be re-worked since norm of denominator could well be zero
 def validTime(threshold):
     threshold = threshold
     def inner_func(prediction, target):
-        valid_idx = 0
+        valid_idx = len(target)
         arr = [np.linalg.norm(prediction[i]-target[i])/np.linalg.norm(target[i]) for i in range(len(target))]
         for i in range(len(arr)):
             if arr[i] >= threshold:
@@ -121,6 +137,19 @@ def RK4(func, y0, t_array, args=None, method=None, max_step=None):
         ystep = y+h/6*(k1+2*k2+2*k3+k4)
         y_array[i,:] = ystep
     return OptimizeResult(t=t_array, y=y_array.T)
+
+def euler(func, x0, tf, dt, out_dt=None):
+    pers = int((tf/dt))
+    tt = dt*np.arange(0, pers+1)
+    out = np.zeros((pers+1, len(x0)))
+    out[0] = x0
+    for i in range(0,pers):
+        out[i+1] = out[i] + dt*func(tt[i],out[i])
+    if out_dt != None:
+        s = int(out_dt/dt)
+        tt = tt[::s]
+        out = out[::s]
+    return OptimizeResult(t=tt, y=out.T)
 
 def dlorenz(t, X, a, b, c, a_eps, b_eps, c_eps):
     # t is an unused dummy variable to facilitate compatibility with solve_ivp calls
@@ -197,15 +226,23 @@ class CompatibleStepper():
 def makeIndivWeightDF(weightMatrix, symbolicLabels):
     cols = [f'x_{i}' for i in range(weightMatrix.shape[1])]
     df = pd.DataFrame(weightMatrix, columns=cols)
-    df['feature'] = symbolicLabels[:,0]
-    df['feature_type'] = symbolicLabels[:,1]
+    if len(symbolicLabels.shape) == 1:
+        df['feature'] = symbolicLabels
+    else:
+        df['feature'] = symbolicLabels[:,0]
+    if len(symbolicLabels.shape)>1 and symbolicLabels.shape[1]>0:
+        df['feature_type'] = symbolicLabels[:,1]
     return df
 
 def makeCombinedWeightDF(weightMatrix, symbolicLabels):
     feature_norms = np.array([np.linalg.norm(x) for x in weightMatrix])
     df = pd.DataFrame(feature_norms, columns=['feature_norm'])
-    df['feature'] = symbolicLabels[:,0]
-    df['feature_type'] = symbolicLabels[:,1]
+    if len(symbolicLabels.shape) == 1:
+        df['feature'] = symbolicLabels
+    else:
+        df['feature'] = symbolicLabels[:,0]
+    if len(symbolicLabels.shape)>1 and symbolicLabels.shape[1]>0:
+        df['feature_type'] = symbolicLabels[:,1]
     return df
 
 def plotWeights(df):
@@ -233,7 +270,7 @@ def plotRecursiveComparison(recursiveOut, data, t0, t_forward, labels=None, figs
     if vline_x:
         axs[0].axvline(vline_x, color='r', linestyle='dashed')
         axs[1].axvline(vline_x, color='r', linestyle='dashed')
-    axs[0].set_title(f'Lorenz: recursive prediction vs. target [{t0},{t0+t_forward}]')
+    axs[0].set_title(f'Recursive prediction vs. target [{t0},{t0+t_forward}]')
     axs[1].set_title(f'Coordinate-wise |error|')
     fig.tight_layout()
     plt.show()
@@ -253,7 +290,7 @@ def plotEnhancedRecursiveComparison(recursiveOut, data, t0, t_forward, labels=No
         axs[0].axvline(vline_x, color='r', linestyle='dashed')
         axs[1].axvline(vline_x, color='r', linestyle='dashed')
         axs[2].axvline(vline_x, color='r', linestyle='dashed')
-    axs[0].set_title(f'Lorenz: recursive prediction vs. target [{t0},{t0+t_forward}]')
+    axs[0].set_title(f'Recursive prediction vs. target [{t0},{t0+t_forward}]')
     axs[1].set_title(f'Coordinate-wise |error|')
     axs[2].set_title('Total ||error||/||x||')
     fig.tight_layout()
@@ -272,7 +309,7 @@ def plotTestComparison(testOut, testTarget, t0, t_forward, labels=None, figsize=
     if vline_x:
         axs[0].axvline(vline_x, color='r', linestyle='dashed')
         axs[1].axvline(vline_x, color='r', linestyle='dashed')
-    axs[0].set_title(f'Lorenz: one-step ahead test vs. target [{t0},{t0+t_forward}]')
+    axs[0].set_title(f'One-step ahead test vs. target [{t0},{t0+t_forward}]')
     axs[1].set_title(f'Coordinate-wise |error|')
     fig.tight_layout()
     plt.show()
