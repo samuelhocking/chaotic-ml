@@ -7,7 +7,9 @@ import numpy as np
 import sympy as sp
 import pandas as pd
 from cmlUtils import * 
+from scipy.optimize import OptimizeResult
 from IPython.display import clear_output, display
+from copy import deepcopy
 
 # -----------------------------------------------------
 # ........................ NVAR .......................
@@ -223,6 +225,11 @@ class NVARModel():
         self.test_NMSE = NMSE(self.test_out, self.test_target)
         self.test_RMSE = RMSE(self.test_out, self.test_target)
         self.test_NRMSE = NRMSE(self.test_out, self.test_target)
+        if printResults:
+            print(f'test MSE  : {self.test_MSE}')
+            print(f'test NMSE  : {self.test_NMSE}')
+            print(f'test RMSE  : {self.test_RMSE}')
+            print(f'test NRMSE  : {self.test_NRMSE}')
 
     def predict(self, data, indices):
         predict_state = self.make_NVAR_state_matrix(data=data, indices=indices)
@@ -239,6 +246,222 @@ class NVARModel():
             running_data = np.vstack((running_data, y))
         recursive_out = np.array(recursive_out)
         return recursive_out
+
+class PolyCombNVARModel(NVARModel):
+    def __init__(self, k, s, reg, d, max_order=2, natural_dt=None):
+        super().__init__(k, s, reg, None, None, None, natural_dt)
+        self.max_order = max_order
+        self.d = d
+        self.l = self.k*self.d
+        self.linear_indices = range(1,self.l+1)
+        self.ALPHA = self.make_polynomial_comb_func_multiindex()
+        self.D_ALPHA = self.make_polynomial_comb_deriv_multiindex(self.ALPHA)
+
+    def make_polynomial_comb_func_multiindex(self):
+        A = np.eye(self.l)
+        for i in range(self.max_order-1):
+            A0 = A
+            for j in range(self.l):
+                ej = basisVectRn(j, self.l)
+                B = deepcopy(A0)
+                for x in B:
+                    x += ej
+                A = np.vstack((A, B))
+        ALPHA = np.vstack([np.zeros(self.l),A])
+        ALPHA, idx = np.unique(ALPHA,axis=0,return_index=True)
+        ALPHA = ALPHA[np.argsort(idx)]
+        return ALPHA
+
+    def make_polynomial_comb_deriv_multiindex(self, func_multiindex):
+        ALPHA = func_multiindex
+        m = ALPHA.shape[0]
+        D_ALPHA = np.zeros((m,self.l,self.l+1))
+
+        # iterate through rows
+        for i in range(m): 
+            # iterate through linear variables
+            for j in range(self.l):
+                # check if multi-index of jth linear variable is > 0 (linear or higher dependence)
+                if ALPHA[i,j] > 0:
+                    D_ALPHA[i,j,0] = ALPHA[i,j]
+                    D_ALPHA[i,j,1:] = np.max([ALPHA[i,:]-basisVectRn(j,self.l),np.zeros(self.l)],axis=0)
+        return D_ALPHA
+
+    def make_state_vector(self, linear):
+        # return np.array([[np.product(linear ** x)] for x in ALPHA])
+        return np.array([np.product(linear ** self.ALPHA[i]) for i in range(len(self.ALPHA))])
+
+    def make_state_vector_gradient_matrix(self, linear):
+        return np.array([np.array([self.D_ALPHA[i,j,0]*np.product(linear ** self.D_ALPHA[i,j,1:]) for j in range(self.l)]) for i in range(len(self.D_ALPHA))])
+
+    def make_NVAR_matrices(self, data, indices):
+        lin_stackable = []
+        state_stackable = []
+        grad_stackable = []
+        for idx in indices:
+            lin = np.reshape(np.array(data[idx:idx-self.k*self.s:-self.s]), (1,self.l))
+            lin_stackable.append(lin)
+            state_stackable.append(self.make_state_vector(lin))
+            grad_stackable.append(self.make_state_vector_gradient_matrix(lin))
+        return (
+            np.vstack([x for x in lin_stackable]),
+            np.vstack([x for x in state_stackable]),
+            np.vstack([[x] for x in grad_stackable])
+        )
+
+    def train(self, data, target, train_indices, dataLossFactor=1, ODEFunc=None, ODELossFactor=0, printResults=True):
+        self.training_target = target[train_indices]
+        self.lin, self.state, self.state_grad = self.make_NVAR_matrices(data=data, indices=train_indices)
+        len_h = self.state.shape[1]
+        T = len(train_indices)
+        d = data.shape[1]
+        if ODEFunc != None:
+            self.ODEFunc = ODEFunc
+            reshaped_lin = self.lin.reshape((int(T*self.k),d))
+            self.d_lin_dt = np.reshape(np.array([self.ODEFunc(x) for x in reshaped_lin]),self.lin.shape)
+            self.G = np.einsum('ijk,ik->ij', self.state_grad, self.d_lin_dt)
+            self.ODE_training_target = np.array([ODEFunc(x) for x in target[train_indices]]) # T-2 x d matrix
+            self.D1 = firstCentralDiffMatrix(T, self.natural_dt) # T x T-2 matrix -> D1 @ ODE_training_target -> T x d matrix
+            ODE_LHS_term = self.G.T @ self.G # |h|x|h|
+            ODE_RHS_term = self.G.T @ self.ODE_training_target # |h|xT @ Txd -> |h|xd
+        else:
+            self.ODE_training_target = None
+            self.D1 = None
+            ODE_LHS_term = np.zeros((len_h,len_h))
+            ODE_RHS_term = np.zeros((T, d))
+        # all products on LHS are |h|x|h| where |h| is length of state vector
+        # all products on RHS are |h|xd -> looking for w |h|xd to multiply |h|x|h| on right
+        self.w = np.linalg.lstsq(
+            dataLossFactor*self.state.T @ self.state + ODELossFactor*ODE_LHS_term + self.reg * np.eye(len_h),
+            dataLossFactor*self.state.T @ self.training_target + ODELossFactor*ODE_RHS_term, rcond=None
+            )[0]
+        
+        loss_info = []
+        # -- Data
+        self.training_pred_data = self.state @ self.w
+        self.training_data_loss = NormSq(self.training_pred_data, self.training_target)
+        self.training_data_MSE = MSE(self.training_pred_data, self.training_target)
+        self.training_data_NMSE = NMSE(self.training_pred_data, self.training_target)
+        self.training_data_NRMSE = NRMSE(self.training_pred_data, self.training_target)
+        self.weighted_training_data_loss = dataLossFactor * self.training_data_loss
+        data_loss_info = {
+            'Component' : 'Data',
+            'MSE' : self.training_data_MSE,
+            'NMSE' : self.training_data_NMSE,
+            'NRMSE' : self.training_data_NRMSE,
+            'Loss' : self.training_data_loss,
+            'Weighted Loss' : self.weighted_training_data_loss
+        }
+        loss_info.append(data_loss_info)
+        # -- Regularization
+        self.w_norm_sq = np.linalg.norm(self.w)**2
+        self.w_MSE = np.linalg.norm(self.w)**2/(self.w.size)
+        self.w_NMSE = np.linalg.norm(self.w)**2/(self.w.size)
+        self.w_NRMSE = np.linalg.norm(self.w)/np.sqrt(self.w.size)
+        self.reg_penalty = self.reg*self.w_norm_sq
+        reg_loss_info = {
+            'Component' : 'Regularization',
+            'MSE' : self.w_MSE,
+            'NMSE' : self.w_NMSE,
+            'NRMSE' : self.w_NRMSE,
+            'Loss' : self.w_norm_sq,
+            'Weighted Loss' : self.reg_penalty
+        }
+        ['Regularization', 'N/A', self.w_norm_sq, self.reg_penalty]
+        # -- ODE
+        if ODEFunc != None:
+            self.training_pred_ODE = self.G @ self.w
+            self.training_ODE_loss = NormSq(self.training_pred_ODE, self.ODE_training_target)
+            self.training_ODE_MSE = MSE(self.training_pred_ODE, self.ODE_training_target)
+            self.training_ODE_NMSE = NMSE(self.training_pred_ODE, self.ODE_training_target)
+            self.training_ODE_NRMSE = NRMSE(self.training_pred_ODE, self.ODE_training_target)
+            self.weighted_training_ODE_loss = ODELossFactor * self.training_ODE_loss
+            ODE_loss_info = {
+            'Component' : 'ODE',
+            'MSE' : self.training_ODE_MSE,
+            'NMSE' : self.training_ODE_NMSE,
+            'NRMSE' : self.training_ODE_NRMSE,
+            'Loss' : self.training_ODE_loss,
+            'Weighted Loss' : self.weighted_training_ODE_loss
+            }
+            loss_info.append(ODE_loss_info)
+        else:
+            self.training_pred_ODE = None
+            self.training_ODE_loss = 0
+            self.weighted_training_ODE_loss = 0
+        # -- D_ODE
+        loss_info.append(reg_loss_info)
+        total_loss_info = {
+            'Component' : 'Total',
+            'MSE' : sum([x['MSE'] for x in loss_info]),
+            'NMSE' : sum([x['NMSE'] for x in loss_info]),
+            'NRMSE' : sum([x['NRMSE'] for x in loss_info]),
+            'Loss' : sum([x['Loss'] for x in loss_info]),
+            'Weighted Loss' : sum([x['Weighted Loss'] for x in loss_info])
+            }
+        loss_info.append(total_loss_info)
+        self.training_total_weighted_loss = total_loss_info['Weighted Loss']
+        self.training_df = pd.DataFrame.from_records(loss_info)
+        self.training_df.set_index('Component', inplace=True)
+        if printResults:
+            print(
+                self.training_df.to_string(
+                formatters= {
+                    "MSE": "{:.6f}".format,
+                    "NMSE": "{:.6f}".format,
+                    "NRMSE": "{:.6f}".format,
+                    "Loss": "{:.6f}".format,
+                    "Weighted Loss": "{:.6f}".format
+                }
+                )
+            )
+
+    # update this for objective function values, not just data difference
+    def test(self, data, target, test_indices, printResults=True):
+        self.test_target = target[test_indices]
+        self.test_state, self.test_state_grad = self.make_NVAR_matrices(data=data, indices=test_indices)
+        self.test_out = self.test_state @ self.w
+        self.test_MSE = MSE(self.test_out, self.test_target)
+        self.test_NMSE = NMSE(self.test_out, self.test_target)
+        self.test_RMSE = RMSE(self.test_out, self.test_target)
+        self.test_NRMSE = NRMSE(self.test_out, self.test_target)
+        if printResults:
+            print(f'test MSE  : {self.test_MSE}')
+            print(f'test NMSE  : {self.test_NMSE}')
+            print(f'test RMSE  : {self.test_RMSE}')
+            print(f'test NRMSE  : {self.test_NRMSE}')
+
+    def predict(self, data, indices):
+        predict_lin, predict_state, predict_state_grad = self.make_NVAR_matrices(data=data, indices=indices)
+        predict_out = predict_state @ self.w
+        return predict_out
+        # return OptimizeResult(t=t_array, y=y_array.T)
+    
+    def recursive_predict(self, data, start, end, t_forward):
+        running_data = data[start:end,]
+        recursive_out = []
+        lin_array = np.zeros((t_forward,self.l))
+        grad_array = np.zeros((t_forward,len(self.w),self.l))
+        for i in range(t_forward):
+            lin = np.reshape(np.array(running_data[-1:-1-self.k*self.s:-self.s]), (1,self.l))
+            state_vect = self.make_state_vector(lin)
+            state_grad = self.make_state_vector_gradient_matrix(lin)
+            # y = state_vect.T @ self.w
+            y = state_vect @ self.w
+            # recursive_out.append(y[0])
+            recursive_out.append(y)
+            running_data = np.vstack((running_data, y))
+            lin_array[i,:] = lin
+            grad_array[i,:,:] = state_grad
+        recursive_out = np.array(recursive_out)
+        # lin_array = np.array(lin_array)
+        # grad_array = np.array(grad_array)
+        reshaped_lin = lin_array.reshape((int(t_forward*self.k),self.d))
+        d_lin_dt = np.reshape(np.array([self.ODEFunc(x) for x in reshaped_lin]),lin_array.shape)
+        G = np.einsum('ijk,ik->ij', grad_array, d_lin_dt)
+        d_Yhat_dt = G @ self.w
+        # return recursive_out
+        return OptimizeResult(y=recursive_out, dydt=d_Yhat_dt)
 
 def get_symbolic_state_labels(k, d, nonlinearFunc=None, extraNonlinearFunc=None, hybrid=False):
     bias = np.array([sp.symbols("1")])
@@ -439,6 +662,65 @@ def testRecursiveNVARParams(
                 model.train(data, target, train_indices)
             else:
                 model.trainWithODE(data, target, train_indices, ODEFunc, ODELossFactor)
+            recursive_out = model.recursive_predict(data, train_start, train_end, test_end-test_start)
+            metric = metricFunc(recursive_out,test_target)
+            metric_arr.append(metric)
+            model_arr.append(model)
+            clear_output(wait=True)
+            print(f'done: scen {ctr}/{total_scens-1} ({100*ctr/(total_scens-1):.02f}%) |  s={s} r={r} metric={metric}')
+            ctr += 1
+    metric_arr = np.array(metric_arr)
+    best_idx = objective(metric_arr[~np.isnan(metric_arr)])
+    best_model = [model_arr[i] for i in range(len(model_arr)) if ~np.isnan(metric_arr)[i]][best_idx]
+    best_metric = [metric_arr[i] for i in range(len(metric_arr)) if ~np.isnan(metric_arr)[i]][best_idx]
+
+    print(f'best recursive params:')
+    print(f'k        :{best_model.k}')
+    print(f's        :{best_model.s}')
+    print(f'reg      :{best_model.reg}')
+    print(f'objective:{best_metric}')
+
+    if returnFlag:
+        return {
+            'k' : best_model.k,
+            's' : best_model.s,
+            'reg' : best_model.reg,
+            'size' : best_model.w.shape[0],
+            'metric' : best_metric
+        }
+    
+def testRecursiveNVARParams_Poly(
+    k,
+    s_grid,
+    reg_grid,
+    data,
+    target,
+    train_start,
+    train_end, 
+    test_start,
+    test_end,
+    metricFunc,
+    max_order=2,
+    objective=np.argmin,
+    returnFlag=False,
+    dataLossFactor=1,
+    ODEFunc=None,
+    ODELossFactor=0,
+    natural_dt=None
+    ):
+
+    test_target = target[test_start:test_end]
+    train_indices = np.arange(train_start,train_end)
+    d = data.shape[1]
+
+    model_arr = []
+    metric_arr = []
+    ctr = 0
+    total_scens = len(s_grid)*len(reg_grid)
+    for s in s_grid:
+        for r in reg_grid:
+            model = PolyCombNVARModel(k=k, s=s, reg=r, max_order=max_order, d=d, natural_dt=natural_dt)
+            model.train(data, target, train_indices, dataLossFactor=dataLossFactor, ODELossFactor=ODELossFactor, ODEFunc=ODEFunc, printResults=False)
             recursive_out = model.recursive_predict(data, train_start, train_end, test_end-test_start)
             metric = metricFunc(recursive_out,test_target)
             metric_arr.append(metric)
